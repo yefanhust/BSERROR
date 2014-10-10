@@ -1,2 +1,7 @@
+# ignore objects and archives, anywhere in the tree
+# "**/foo" to match file or directory "foo" anywhere
+# "abc/**" to match all file inside directory "abc", relative to the location of the .gitignore file, with inifinite depth
+# ! to add an exception
+# "*.[oa]" to ignore all files ended by ".o" and ".a"
+test
 *.out
-test*
