@@ -8,7 +8,7 @@
 #include "inc/misc.h"
 #include "inc/onetimesimu.h"
 
-#define M 100 //Monte Carlo simulation
+#define M 10 //Monte Carlo simulation
 
 FILE* output=0;
 char outputName[100];
@@ -27,12 +27,12 @@ typedef char HostNameType[128];
 int main(int argc, char *argv[])
 {
   const double Prob = 0.95;
-  const int Ninit = 2000;//initialN(Prob);
+  const int Ninit = initialN(Prob);
   int countloc, Mloc, seed, len;
   int Nloc, Nnew, Nup, Ndown; 
   int stop = 0;
-  int rptBuf[msgReportLenghth]; //Mloc, countloc
-  int shdBuf[msgSchedLength]; //Nloc, stop
+  int rptBuf[msgReportLenghth]; //report buffer which contains Mloc, countloc
+  int shdBuf[msgSchedLength]; //schedule buffer which contains Nloc, stop
   char myName[hostNameLen];
   
   //Initialize MPI
@@ -46,14 +46,13 @@ int main(int argc, char *argv[])
   MPI_Comm_rank(MPI_COMM_WORLD, &myRank);
   MPI_Comm_size(MPI_COMM_WORLD, &mpiWorldSize);
   
-  if(myRank == bossRank){
+  if(myRank == bossRank){//if I'm the boss
     int sumM, sumCount;
-    int threshold = 2;//Ninit/1000;
-    int lastvalid = -1;
+    int threshold = 2;//threshold of searching interval 
+    int lastvalid = -1;//the most recent found valid N 
     double t0, t1;
     requestList = (MPI_Request*)malloc((mpiWorldSize-1)*sizeof(MPI_Request));
     
-
     MPI_Get_processor_name(&myName[0], &len);
     printf("boss:\t%16s has joined.\n",myName);
     HostNameType workerName[mpiWorldSize-1];
@@ -76,6 +75,7 @@ int main(int argc, char *argv[])
       countloc = 0;
       Mloc = M%(mpiWorldSize-1);
       seed = M-Mloc;
+      //the boss takes care of the remaining iterations
       for (int m = 0; m < Mloc; ++m){
 	oneTimeSimu_OMP2(&countloc, seed+m, Nloc);
       }//loop MC
@@ -108,45 +108,44 @@ int main(int argc, char *argv[])
       shdBuf[1] = stop;
       for (int dest = 1; dest < mpiWorldSize; ++dest){
 	MPI_Isend((void*)&shdBuf[0], msgSchedLength, MPI_INT, dest, msgSchedTag, MPI_COMM_WORLD, &requestNull);
-	//MPI_Request_free(&requestNull);
       }
       msgReportTag++;
     }//while
     t1 = MPI_Wtime();
 
-	sprintf(outputName, "par-M-%d-np-%d.out", M, mpiWorldSize);
-	output = fopen(outputName, "a+");
+    sprintf(outputName, "par-M-%d-np-%d.out", M, mpiWorldSize);
+    output = fopen(outputName, "a+");//execution results
 
-	fprintf(output, "%d, %d, ", mpiWorldSize, M);
+    fprintf(output, "%d, %d, ", mpiWorldSize, M);
 	
     printf("Time: %.6lfs\n", t1-t0);
 
-	fprintf(output, "%.6lf, ", t1-t0);
-
-	fprintf(output, "%d, ", Ninit);
-
-    if(lastvalid!=-1)
-	{
+    fprintf(output, "%.6lf, ", t1-t0);
+    
+    fprintf(output, "%d, ", Ninit);
+	
+    if(lastvalid!=-1){
       printf("The N should be at least %d\n", lastvalid);
-	  fprintf(output, "%d\n", lastvalid);
-	}
-    else
-	{
+      fprintf(output, "%d\n", lastvalid);
+    }
+    else{
       printf("Something must be wrong. We don't find any approriate N.\n");
-	  fprintf(output, "%d\n", 0);
-	}
+      fprintf(output, "%d\n", 0);
+    }
 
-	fclose(output);
+    fclose(output);
+
   }						
-  else{//worker   
-    const int share = M/(mpiWorldSize-1);
+  else{//if I'm the worker   
+    const int share = M/(mpiWorldSize-1);//the workers split evenly the total M times simulation
     int nslices = share>=10? 10 : 1;
     int flag = 0;
     int m;
+    //if I've finished my work without receving a further command from boss, the new N I decide to calculate 
     int Nprecal;
     
     MPI_Get_processor_name(&myName[0], &len);
-    MPI_Send((void*)&myName,hostNameLen,MPI_CHAR,bossRank,msgNameTag,MPI_COMM_WORLD);
+    MPI_Send((void*)&myName,hostNameLen,MPI_CHAR,bossRank,msgNameTag,MPI_COMM_WORLD);//tell boss I'm in 
     
     Ndown = 0; Nup = Ninit;
     Nloc = Ninit >> 1;
@@ -171,7 +170,7 @@ int main(int argc, char *argv[])
 	for (int mm = 0; mm < nslices; ++mm){
 	  oneTimeSimu_OMP2(&countloc, seed+m*nslices+mm, Nprecal);
 	}//tends to calculate a heavier task in advance
-	MPI_Iprobe(bossRank, msgSchedTag, MPI_COMM_WORLD, &flag, &mpiStatus);
+	MPI_Iprobe(bossRank, msgSchedTag, MPI_COMM_WORLD, &flag, &mpiStatus);//Have I received boss's command? 
 	if(flag)
 	  break;
       }
@@ -185,13 +184,13 @@ int main(int argc, char *argv[])
 	else 
 	  Ndown = Nloc;
 
-	if(Nnew == Nprecal){
+	if(Nnew == Nprecal){//What I just calculated is exactly what boss want me to 
 	  if(m!=share/nslices)
 	    Mloc = share - (m+1)*nslices;
 	  else
 	    Mloc = 0;
 	}
-	else{
+	else{//I didn't do the right N, redo it all over again 
 	  Mloc = share;
 	  countloc = 0;
 	}

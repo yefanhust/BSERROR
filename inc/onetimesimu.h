@@ -13,18 +13,17 @@ const double relEPSILON = 5.0E-2; //relative proportion to X0
 
 
 //NN/2-1 has to be the multiple of 8
-//NN = (8*LV+1)*2, LV = 20 -> NN = 322 
-const int NN = 16002;//2962; //integral intervals
+//NN = (8*LV+1)*2, LV = 1000 -> NN = 16002 
+const int NN = 16002; //integral intervals
 const int GUIDED_CHUNK = 1; 
 
 
-#ifdef __MIC__
+#ifdef __MIC__ //if device MIC(Intel Xeon Phi) is available 
 double vNormalIntegral(double b)
 {
   __declspec(align(64)) __m512d vec_cf0, vec_cf1, vec_cf2, vec_s, vec_stp, vec_exp; 
   const int vecsize = 8; 
   const int nCal = (NN/2-1)/vecsize;
-  //const int left = NN%vecsize;
   double a = 0.0f;
   double s, h, sum = 0.0f;
   h = (b-a)/NN;
@@ -42,13 +41,13 @@ double vNormalIntegral(double b)
   vec_s   = _mm512_add_pd(vec_cf0, vec_s);//(a+16h,..,a+2h)
   
   vec_stp = _mm512_set1_pd(2*h*vecsize-h);
-  vec_cf0 = _mm512_set1_pd(h);
+  vec_cf0 = _mm512_set1_pd(h);//reuse vec_cf0 to save the vec register
   
   for (int i = 0; i < nCal; ++i){
     vec_exp = _mm512_mul_pd(vec_s, vec_s);
     vec_exp = _mm512_mul_pd(vec_exp, vec_cf2);
-    vec_cf1 = _mm512_exp_pd(vec_exp);//vec_cf1->sum
-    sum    += 2.0*_mm512_reduce_add_pd(vec_cf1);
+    vec_cf1 = _mm512_exp_pd(vec_exp);//reuse vec_cf1 to save the vec register
+    sum    += 2.0*_mm512_reduce_add_pd(vec_cf1);//reduce add
 
     vec_s   = _mm512_add_pd(vec_s, vec_cf0);//s+=h
     vec_exp = _mm512_mul_pd(vec_s, vec_s);
@@ -56,13 +55,13 @@ double vNormalIntegral(double b)
     vec_cf1 = _mm512_exp_pd(vec_exp);
     sum    += 4.0*_mm512_reduce_add_pd(vec_cf1);
     
-    vec_s   = _mm512_add_pd(vec_s, vec_stp);
+    vec_s   = _mm512_add_pd(vec_s, vec_stp);//reduce add 
   }
 
   sum = 0.5*sqrt(2*PI) + h*sum/3.0;
   return sum;
 }
-#else
+#else //CPU vectorized version expressed using pragma
 double vNormalIntegral(double b)
 {
   double a = 0.0f;
@@ -86,7 +85,7 @@ double vNormalIntegral(double b)
 }
 #endif
 
-
+//One time Monte Carlo simulation using the approach described in par_omp2.c
 void oneTimeSimu_OMP2(int* count, const int seed, const int N)
 {
   double err = 0.0;
@@ -98,6 +97,7 @@ void oneTimeSimu_OMP2(int* count, const int seed, const int N)
   
 #pragma omp parallel default(none) shared(err, rootdt, dt, nCal, X0, seed)
   {
+    //thread-private 
     double NRV[Nvec] ALIGNED; // normal distribution random vector
     double BM[Nvec] ALIGNED; // brownian motion
     double PX[Nvec+1] ALIGNED; // price 
@@ -108,12 +108,13 @@ void oneTimeSimu_OMP2(int* count, const int seed, const int N)
     int lastk = -1;
     int i,j,k;
     VSLStreamStatePtr stream;
-    int errcode = vslNewStream(&stream, VSL_BRNG_MT2203, seed);//seed=m(absolute value)
+    int errcode = vslNewStream(&stream, VSL_BRNG_MT2203, seed);//seed=m(global value)
 #pragma omp for schedule(guided, GUIDED_CHUNK) nowait
     for (k = 0; k < nCal; ++k){
       //update BM to the questioned position
       tmp = 0.0;
       for (i = 0; i < k-lastk-1; ++i){
+	//Generate Nvec gaussian distribution random numbers into NRV
 	vdRngGaussian(VSL_RNG_METHOD_GAUSSIAN_BOXMULLER, stream, Nvec, NRV, 0.0f, 1.0f);
 #pragma simd reduction(+:tmp) vectorlengthfor(double) assert
 	for (j = 0; j < Nvec; ++j){
@@ -212,6 +213,7 @@ void oneTimeSimu_OMP2(int* count, const int seed, const int N)
     *count = *count+1;
 }
 
+//The upper bound of N given by the theory
 int initialN(const double prob)
 {
   const double EPSILON = X0*relEPSILON; //threshold value 

@@ -7,10 +7,10 @@
 #include "inc/misc.h"
 
 #define ALIGNED __attribute__((aligned(64)))
-#define N 7
-#define NN 16002//integral interval
+#define N 100000 //discrete intervals of hedging 
+#define NN 16002 //integral interval
 
-#define Nvec 3 //tunable, multiple of 8
+#define Nvec 192 //tunable, multiple of 8
 #define GUIDED_CHUNK 1 //tunable
 
 const double PI = 3.14159265358979323846; /* pi */
@@ -18,7 +18,7 @@ const double X0 = 12; //price of risky asset at t0
 const double SIGMA = 0.5; //volatility of risky asset
 const double K = 10; //strike price of the option
 const double T = 1.0; //muaturity time 
-const unsigned long long M = 10; //Monte Carlo Simulation
+const unsigned long long M = 2; //Monte Carlo Simulation
 //const double EPSILON = X0*1.0E-2; //threshold value
 const double prob = 0.95;
 
@@ -36,7 +36,7 @@ int main(int argc, char *argv[])
 
   start_timer();
   for (unsigned long long m = 0; m < M; ++m){
-    err = 0.0; //todo: resolve the random number generation problem
+    err = 0.0; 
     // one-time MC simulation
 #pragma omp parallel default(none) shared(err, rootdt, dt, nCal, X0, m)
     {
@@ -56,8 +56,9 @@ int main(int argc, char *argv[])
 	//update BM to the questioned position
 	tmp = 0.0;
 	for (i = 0; i < k-lastk-1; ++i){
+	  //generate Nvec gaussian distribution random numbers into NRV
 	  vdRngGaussian(VSL_RNG_METHOD_GAUSSIAN_BOXMULLER, stream, Nvec, NRV, 0.0f, 1.0f);
-#pragma simd reduction(+:tmp) vectorlengthfor(double) assert
+#pragma simd reduction(+:tmp) vectorlengthfor(double) assert 
 	  for (j = 0; j < Nvec; ++j){
 	      tmp += NRV[j];
 	  }//loop Nvec reduction
@@ -150,12 +151,10 @@ int main(int argc, char *argv[])
     err = fabs(err);
     if(err < EPSILON)
       count++;
-    //printf("err=%.10lf\n",err);
   }//MC simulations  
   printf ("time %g ms\n", stop_timer());
-  printf("err=%.20lf\n",err);
   printf("count=%llu, M=%llu\n", count, M);
-  printf("%.5g\n", (double)count/(double)M);
+  printf("prob=count/M=%.5g\n", (double)count/(double)M);
 
   return 0;
 }

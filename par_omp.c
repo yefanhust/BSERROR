@@ -7,11 +7,11 @@
 #include "inc/misc.h"
 
 #define ALIGNED __attribute__((aligned(64)))
-#define N 12
-#define Ncache 10000 //tunable
-#define NN 2962 //integral interval 
-//suggested Ncache 1301333 for L2
-//81333 for L1
+#define N 100000
+#define Ncache 10000 //tunable, the proper size to fit into collective L2 cache
+//NN/2-1 has to be the multiple of 8
+//NN = (8*LV+1)*2, LV = 1000 -> NN = 16002
+#define NN 16002 //integral interval 
 #define GUIDED_CHUNK 1 //tunable
 
 double NRV[Ncache] ALIGNED; // normal distribution random vector
@@ -23,7 +23,7 @@ const double X0 = 12; //price of risky asset at t0
 const double SIGMA = 0.5; //volatility of risky asset
 const double K = 10; //strike price of the option
 const double T = 1.0; //muaturity time 
-const unsigned long long M = 1; //Monte Carlo Simulation
+const unsigned long long M = 2; //Monte Carlo Simulation
 //const double EPSILON = X0*1.0E-2; //threshold value
 const double prob = 0.95;
 
@@ -32,7 +32,7 @@ double vNormalIntegral(double b);
 int main(int argc, char *argv[])
 {
   unsigned long long count = 0;
-  double EPSILON = X0*1.0E-2;
+  double EPSILON = X0*5.0E-2;
   double err;
   double PXend;
   const double dt = T/N;
@@ -60,16 +60,12 @@ int main(int argc, char *argv[])
 	//#pragma omp for schedule(guided, GUIDED_CHUNK)
 #pragma omp for schedule(guided) //tunable 
 	for (int i = 1; i < Ncache; ++i){
-	  //tmp = BM[0];
 	  tmp = 0.0;
 #pragma simd reduction(+:tmp) vectorlengthfor(double) assert
 	  for (int j = 1; j <= i; ++j){
-	    //tmp += rootdt*NRV[j];
 	    tmp += NRV[j];
 	  }
-	  //BM[i] = tmp;
 	  BM[i] = BM[0] + tmp*rootdt;
-	  //PX[i+1] = X0*exp(-0.5*SIGMA*SIGMA*(k*Ncache+i+1)*dt+SIGMA*tmp);
 	  PX[i+1] = X0*exp(-0.5*SIGMA*SIGMA*(k*Ncache+i+1)*dt+SIGMA*BM[i]);
 	}
 #pragma omp single
@@ -77,13 +73,11 @@ int main(int argc, char *argv[])
 	  PX[1] = X0*exp(-0.5*SIGMA*SIGMA*(k*Ncache+1)*dt+SIGMA*BM[0]);
 	}
 	
-	//maybe vary the scheduling strategy?
 #pragma omp for reduction(+:err) nowait
 	for (int i = 0; i < Ncache; ++i){
 	  int j = k*Ncache+i;
 	  double Tj = j*(double)T/N;
 	  upbd = (log(PX[i]/K)+0.5*SIGMA*SIGMA*(T-Tj))/(SIGMA*sqrt(T-Tj));
-	  //errloc -= 1/(sqrt(2*PI))*(PX[i+1]-PX[i])*vNormalIntegral(upbd);
 	  err += -1/(sqrt(2*PI))*(PX[i+1]-PX[i])*vNormalIntegral(upbd);
 	}
 
@@ -111,12 +105,9 @@ int main(int argc, char *argv[])
 	  tmp = 0.0;
 #pragma simd reduction(+:tmp) vectorlengthfor(double) assert
 	  for (int j = 1; j <= i; ++j){
-	    //tmp += rootdt*NRV[j];
 	    tmp += NRV[j];
 	  }
-	  //BM[i] = tmp;
 	  BM[i] = BM[0] + tmp*rootdt;
-	  //PX[i+1] = X0*exp(-0.5*SIGMA*SIGMA*(nCal*Ncache+i+1)*dt+SIGMA*BM[i]);
 	  PX[i+1] = X0*exp(-0.5*SIGMA*SIGMA*(nCal*Ncache+i+1)*dt+SIGMA*BM[i]);	
 	}
 #pragma omp single
@@ -125,7 +116,6 @@ int main(int argc, char *argv[])
 	  PXend = PX[left];
 	}
       
-	//maybe vary the scheduling strategy?
 #pragma omp for reduction(+:err) nowait
 	for (int i = 0; i < left; ++i){
 	  int j = nCal*Ncache+i;
@@ -161,14 +151,10 @@ int main(int argc, char *argv[])
     err = fabs(err);
     if(err < EPSILON)
       count++;
-    //printf("err=%.10lf\n",err);
   }//MC simulation
-  printf ("time %g ms\n", stop_timer());
-  
-  printf("err=%.20lf\n",err);
-  
+  printf ("time %g ms\n", stop_timer());  
   printf("count=%llu, M=%llu\n", count, M);
-  printf("%.5g\n", (double)count/(double)M);
+  printf("prob=count/M=%.5g\n", (double)count/(double)M);
 
   vslDeleteStream(&stream);
   return 0;
@@ -178,9 +164,6 @@ int main(int argc, char *argv[])
 double vNormalIntegral(double b)
 {
   __declspec(align(64)) __m512d vec_cf0, vec_cf1, vec_cf2, vec_s, vec_stp, vec_exp; 
-  //NN/2-1 has to be the multiple of 8
-  //NN = (8*LV+1)*2, LV = 20 -> NN = 322
-  //const int NN = 322; //has to be the multiple of 8
   const int vecsize = 8; 
   const int nCal = (NN/2-1)/vecsize;
   //const int left = NN%vecsize;
@@ -224,7 +207,6 @@ double vNormalIntegral(double b)
 #else
 double vNormalIntegral(double b)
 {
-  //const int NN = 322;//corresponds to vNormalIntegral
   double a = 0.0f;
   double s, h, sum = 0.0f;
   h = (b-a)/NN;
