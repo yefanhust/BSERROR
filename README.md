@@ -1,4 +1,4 @@
 BSERROR
 =======
 
-A project to evaluate the hedge fusing price error evaluation using HPC
+A research project on discrete time hedging error based on Intel Xeon/Xeon Phi platform.
